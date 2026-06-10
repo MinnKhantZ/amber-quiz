@@ -1,0 +1,82 @@
+import { Prisma, QuestionType } from "@prisma/client";
+import prisma from "../config/db.js";
+import { AppError } from "../middleware/errorHandler.js";
+
+interface QuestionData {
+  type?: QuestionType;
+  text?: string;
+  imageUrl?: string | null;
+  options?: Array<{ text: string; isCorrect: boolean }> | null;
+  correctAnswer?: string | null;
+  points?: number;
+}
+
+export async function addQuestion(quizId: string, teacherId: string, data: QuestionData) {
+  const quiz = await prisma.quiz.findUnique({ where: { id: quizId } });
+  if (!quiz) throw new AppError("Quiz not found", 404);
+  if (quiz.teacherId !== teacherId) throw new AppError("Not authorized", 403);
+
+  const maxOrder = await prisma.question.aggregate({
+    where: { quizId },
+    _max: { order: true },
+  });
+
+  const { options, ...restData } = data as {
+    type: QuestionType;
+    text: string;
+    imageUrl?: string | null;
+    options?: Array<{ text: string; isCorrect: boolean }> | null;
+    correctAnswer?: string | null;
+    points?: number;
+  };
+
+  return prisma.question.create({
+    data: {
+      ...restData,
+      options: options === null ? Prisma.DbNull : options,
+      quizId,
+      order: (maxOrder._max.order ?? -1) + 1,
+    },
+  });
+}
+
+export async function updateQuestion(id: string, teacherId: string, data: QuestionData) {
+  const question = await prisma.question.findUnique({
+    where: { id },
+    include: { quiz: { select: { teacherId: true } } },
+  });
+  if (!question) throw new AppError("Question not found", 404);
+  if (question.quiz.teacherId !== teacherId) throw new AppError("Not authorized", 403);
+
+  const { options, ...restData } = data;
+  return prisma.question.update({
+    where: { id },
+    data: {
+      ...restData,
+      ...(options !== undefined ? { options: options === null ? Prisma.DbNull : options } : {}),
+    },
+  });
+}
+
+export async function deleteQuestion(id: string, teacherId: string) {
+  const question = await prisma.question.findUnique({
+    where: { id },
+    include: { quiz: { select: { teacherId: true } } },
+  });
+  if (!question) throw new AppError("Question not found", 404);
+  if (question.quiz.teacherId !== teacherId) throw new AppError("Not authorized", 403);
+
+  return prisma.question.delete({ where: { id } });
+}
+
+export async function reorderQuestions(quizId: string, teacherId: string, questionIds: string[]) {
+  const quiz = await prisma.quiz.findUnique({ where: { id: quizId } });
+  if (!quiz) throw new AppError("Quiz not found", 404);
+  if (quiz.teacherId !== teacherId) throw new AppError("Not authorized", 403);
+
+  const updates = questionIds.map((qId, index) =>
+    prisma.question.update({ where: { id: qId }, data: { order: index } })
+  );
+
+  return prisma.$transaction(updates);
+}
